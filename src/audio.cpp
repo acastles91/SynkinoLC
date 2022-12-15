@@ -168,6 +168,8 @@ bool Audio::selectTrack() {
   attachInterrupt(STARTMARK, leaderISR, CHANGE);
 
   // 2. Pick a file and run a few checks
+  if (_trackNum != 999)
+    _trackNum = selectTrackScreen();                          // pick a track number
   _trackNum = selectTrackScreen();                            // pick a track number
   if (_trackNum==0)
     return true;                                              // back to main-menu
@@ -474,6 +476,11 @@ break;
   }
   u8g2->setFont(FONT10);
   return true;
+}
+
+bool Audio::loadTrack(uint16_t trackNum) {
+  _trackNum = trackNum;
+  return loadTrack();
 }
 
 uint8_t Audio::handlePause() {

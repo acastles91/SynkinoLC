@@ -13,6 +13,7 @@ class Audio : public Adafruit_VS1053_FilePlayer {
     static void countISR();
     static void leaderISR();
     bool currentlyLooping;
+    bool loadTrack(uint16_t);
     
     uint8_t state;
 
