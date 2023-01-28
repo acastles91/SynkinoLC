@@ -33,6 +33,7 @@
 			"random": "cpp",
 			"climits": "cpp",
 			"list": "cpp"
-		}
+		},
+		"window.zoomLevel": 1
 	}
 }

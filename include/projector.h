@@ -16,11 +16,12 @@
 
 struct EEPROMstruct {
   uint8_t shutterBladeCount = 2;
-  uint8_t startmarkOffset = 1;
+  uint8_t startmarkOffsetFrames = 1;
   uint8_t p = 8;
   uint8_t i = 3;
   uint8_t d = 1;
   char name[MAX_PROJECTOR_NAME_LENGTH + 1] = {0};
+  int32_t lastUsedOffsetFrames = 0;
 };
 
 class Projector {
@@ -40,6 +41,9 @@ class Projector {
     void e2dump(void);                   // dump EEPROM to serial
     void e2delete(void);                 // delete EEPROM
     EEPROMstruct config(void) const&;    // return current projector's configuration
+    //uint32_t getLastUsedOffset();
+    void setLastUsedOffset(int32_t arg);
+    int32_t getLastUsedOffset();
 
   private:
     EEPROMstruct config_;

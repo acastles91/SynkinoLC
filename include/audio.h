@@ -14,6 +14,9 @@ class Audio : public Adafruit_VS1053_FilePlayer {
     static void leaderISR();
     bool currentlyLooping;
     bool loadTrack(uint16_t);
+    bool autostart = false;
+    bool negativeOffset;
+    int32_t totalOffsetImps;
     
     uint8_t state;
 
@@ -34,6 +37,8 @@ class Audio : public Adafruit_VS1053_FilePlayer {
  
     uint32_t lastSampleCounterHaltPos = 0;
     int32_t  syncOffsetImps = 0;
+    int32_t  oldSyncOffsetImps = 0;
+    int32_t firstSyncOffsetImps;
     uint32_t sampleCountBaseLine = 0;
     uint16_t impToSamplerateFactor;
     uint16_t deltaToFramesDivider;

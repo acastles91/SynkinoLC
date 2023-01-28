@@ -151,12 +151,37 @@ void Audio::countISR() {
 
   if ((thisMicros - lastMicros) > 2000) {         // poor man's debounce - no periods below 2ms (500Hz)
     totalImpCounter++;
+    //PRINTLN("Aqui");
     lastMicros = thisMicros;
     digitalToggleFast(LED_BUILTIN);               // toggle the LED
   }
   interrupts();
 }
 
+bool Audio::loadTrack(uint16_t trackNum) {
+  if(SD.exists("999-24-L.ogg")){
+  _trackNum = trackNum;
+  }
+  return loadTrack();
+}
+
+bool Audio::loadTrack() {
+  for (bool isLoop : { false, true })  {
+    looping = isLoop;
+    strcpy(_filename, (isLoop) ? "000-00-L.ogg" : "000-00.ogg");
+    ui.insertPaddedInt(&_filename[0], _trackNum, 10, 3);
+    for (_fps=12; _fps<=25; _fps++) {                             // guess fps
+      ui.insertPaddedInt(&_filename[4], _fps, 10, 2);
+      if (SD.exists(_filename)) {                                 // file found!
+        _isLoop = isLoop;
+        PRINTLN("Track loaded:");
+        PRINTLN(_filename);
+        return true;
+      }
+    }
+  }
+  return false;                                         // file not found
+}
 bool Audio::selectTrack() {
   EEPROMstruct pConf = projector.config();        // get projector configuration
   state = CHECK_FOR_LEADER;
@@ -170,16 +195,15 @@ bool Audio::selectTrack() {
   // 2. Pick a file and run a few checks
   if (_trackNum != 999)
     _trackNum = selectTrackScreen();                          // pick a track number
-  _trackNum = selectTrackScreen();                            // pick a track number
   if (_trackNum==0)
     return true;                                              // back to main-menu
   if (!loadTrack())                                           // try to load track
     return ui.showError("File not found.");                   // back to track selection
   if (!connected())                                           // check if audio is plugged in
     return ui.showError("Please connect audio device.");
-  if (!digitalReadFast(STARTMARK))                            // check for leader
+  if ((!digitalReadFast(STARTMARK)) && (!autostart)) {// check for leader
     state = OFFER_MANUAL_START;
-
+  }
   // 3. Busy bee is working hard ...
   u8g2->clearBuffer();
   u8g2->setFont(FONT10);
@@ -215,13 +239,38 @@ bool Audio::selectTrack() {
   _frameOffset             = 0;
   sampleCountBaseLine      = 0;
   lastSampleCounterHaltPos = 0;
-  //syncOffsetImps           = 0;
-
- // syncOffsetImps           = SYNC_OFFSET_EIKI * _fsPhysical;
   syncOffsetImps           = 0;
+
+  // For the loop mode, different kinds of offsets are defined and added to each other.
+  //The modulation happens later on with the difference of offsets.
+  //The last working offset is saved to eeprom, so that the player starts from there after it's turned on again.
+  
+  firstSyncOffsetImps      = pConf.lastUsedOffsetFrames * pConf.shutterBladeCount;
+  oldSyncOffsetImps        = firstSyncOffsetImps;
   Setpoint                 = 0;
   Input                    = 0;
   Output                   = 0;
+  totalOffsetImps = (firstSyncOffsetImps) + (pConf.startmarkOffsetFrames * pConf.shutterBladeCount);
+  
+ // The different offsets to be printed to the console for debugging 
+ // PRINTLN("\n");
+ // PRINT("firstSyncOffsetImps = ");
+ // PRINT(firstSyncOffsetImps);
+ // PRINTLN("\n");
+ // PRINT("oldSyncOffsetImps = ");
+ // PRINT(oldSyncOffsetImps);
+ // PRINTLN("\n");
+ // PRINT("syncOffsetImps = ");
+ // PRINT(syncOffsetImps);
+ // PRINTLN("\n");
+ // PRINT("totalOffsetImps = ");
+ // PRINT(totalOffsetImps);
+ // PRINTLN("\n");
+ // PRINT("pConf.startmarkOffsetFrames = ");
+ // PRINT(pConf.startmarkOffsetFrames); 
+ // PRINTLN("\n");
+
+
   while (average(0) != 0) {}
 
   // 7. Prepare PID
@@ -234,6 +283,8 @@ bool Audio::selectTrack() {
     case 22050: myPID.SetOutputLimits(-400000, 600000); break;  // 17% - 227%
     case 32000: myPID.SetOutputLimits(-400000, 285000); break;  // 17% - 159%
     case 44100: myPID.SetOutputLimits(-400000,  77000); break;  // 17% - 116%
+    //case 48000: myPID.SetOutputLimits(-400000,  29000); break;  // 17% - 107%
+    
     case 48000: myPID.SetOutputLimits(-400000,  29000); break;  // 17% - 107%
     default:    myPID.SetOutputLimits(-400000,  77000);         // lets assume 44.2 kHz here
   }
@@ -245,16 +296,21 @@ bool Audio::selectTrack() {
 
     switch (state) {
     case CHECK_FOR_LEADER:
-    PRINTLN("State = Check for leader");
       if (digitalReadFast(STARTMARK)) {
         PRINT("Waiting for start mark ... ");
         drawWaitForPlayingMenu();
         state = WAIT_FOR_STARTMARK;
-      } else
-        state = OFFER_MANUAL_START;
-      PRINTLN("Offset =");
-      PRINTLN(_frameOffset); 
-break;
+      } else {
+        if (!autostart){
+          state = OFFER_MANUAL_START;
+          PRINTLN("Offset =");
+          PRINTLN(_frameOffset); 
+        }
+        else{
+          state = CHECK_FOR_LEADER;
+        }
+      }
+      break;
 
     case OFFER_MANUAL_START:
       if (ui.userInterfaceMessage("Can't detect film leader.",
@@ -263,59 +319,62 @@ break;
         state = START;
         detachInterrupt(STARTMARK);
         attachInterrupt(IMPULSE, countISR, RISING); // start impulse counter
-      } else
+      } else{
         state = SHUTDOWN; // back to main-menu
-      break;
+      }
+    break;
 
     case WAIT_FOR_STARTMARK:
-      if (digitalReadFast(STARTMARK))
+
+  //For loop mode, startmark offset and manual offset have been combined in total offset.
+
+    if (digitalReadFast(STARTMARK))
         continue; // there is still leader
-      attachInterrupt(IMPULSE, countISR, RISING); // start impulse counter
       PRINTLN("Hit!");
-      PRINT("Waiting for ");
-      PRINT(pConf.startmarkOffset);
-      PRINTLN(" frames ...");
+      PRINT("Waiting for combined offset (totalOffsetImps) ");
+      PRINT(totalOffsetImps);
+      PRINTLN(" imps ...");
       detachInterrupt(STARTMARK);
       digitalWriteFast(LED_BUILTIN, LOW);
       totalImpCounter = 0;
-      state = WAIT_FOR_OFFSET;
-      PRINTLN("Offset =");
-      PRINTLN(_frameOffset); 
-break;
 
+      attachInterrupt(IMPULSE, countISR, RISING); // start impulse counter
+    
+      PRINTLN("Wait for total offset ");
+      PRINT(totalOffsetImps);
+      state = WAIT_FOR_OFFSET;
+      break;
+    
     case WAIT_FOR_OFFSET:
-      if ((totalImpCounter/pConf.shutterBladeCount) < pConf.startmarkOffset)
-        continue;
-      state = START;
-      PRINTLN("Offset =");
-      PRINTLN(_frameOffset); 
-break;
+          if (totalImpCounter < totalOffsetImps){
+          PRINTLN(totalImpCounter);
+          delay(100);
+      }
+      else{
+        state = START;
+      }
+    break;
 
     case START:
-      totalImpCounter = 0;
-      PRINTLN("Starting playback.");
+    
       pidTimer.begin([]() { runPID = true; }, 10_Hz);
       buzzer.play(1000,42); // play 2-pop ;-)
-      enc.setValue(0);
+      enc.setValue((oldSyncOffsetImps / pConf.shutterBladeCount));
       enc.buttonChanged();
       state = PLAYING;
-      PRINTLN("SampleCount before clearSampleCounter");
-      PRINTLN(getSampleCount());
+      currentlyLooping = false;    
       clearSampleCounter();
-      //restoreSampleCounter(0);
-      delay(1000);
-      PRINTLN("SampleCount after clearSampleCounter");
-      PRINTLN(getSampleCount());
-      //PRINTLN("SampleCount");
-      //PRINTLN(getSampleCount());
-      currentlyLooping = false;      
-      pausePlaying(false);
 
+      totalImpCounter = 0;
       sampleCountBaseLine = getSampleCount();
-      break;
+
+
+
+    break;
 
     case PLAYING:
-
+//Mind the difference between variables in frames and variables in imps.
+//A positive offset is a delay, a negative offset is an advance
       if (runPID) {
         speedControlPID();
         runPID = false;
@@ -323,42 +382,58 @@ break;
       }
       if (enc.buttonChanged() && enc.getButton()) {
         showOffsetCorrectionInput = !showOffsetCorrectionInput;
-        if (showOffsetCorrectionInput)
-          enc.setValue(syncOffsetImps / pConf.shutterBladeCount);
-        else {
-          PRINT("Sync-offset set to ");
-          PRINT(syncOffsetImps / pConf.shutterBladeCount);
-          PRINTLN(" frames.");
+        if (showOffsetCorrectionInput){
+          enc.setValue((oldSyncOffsetImps / pConf.shutterBladeCount));
+        }else {
+         // PRINT("Sync-offset set to ");
+         // PRINT(oldSyncOffsetImps / pConf.shutterBladeCount);
+         // PRINTLN(" frames.");
+         // PRINT("Delta offset set to ");
+         // PRINT(firstSyncOffsetImps - oldSyncOffsetImps);
+         // PRINTLN(" imps.");
+          projector.setLastUsedOffset((oldSyncOffsetImps/ pConf.shutterBladeCount));
+          pConf = projector.config();
+          syncOffsetImps = firstSyncOffsetImps - oldSyncOffsetImps;
+          totalOffsetImps = (oldSyncOffsetImps) + (pConf.startmarkOffsetFrames * pConf.shutterBladeCount);
+       //   PRINTLN("projector.lastUsedOffsetFrames = ");
+       //   PRINTLN(projector.getLastUsedOffset());
+       //   PRINTLN("totalOffsetImps = ");
+       //   PRINTLN(totalOffsetImps);
+       //   PRINTLN(pConf.lastUsedOffsetFrames);
         }
       }
-
       if (showOffsetCorrectionInput){
         handleFrameCorrectionOffsetInput();
+
       }
-      else{
+        else{
         drawPlayingMenu();
       }
       if (stopped()){
+        if(looping){
+          state = LOOP;
+        } 
+        else { 
         state = SHUTDOWN;
+        }
       }
 
       if (looping){
         if (digitalReadFast(STARTMARK)){
           attachInterrupt(STARTMARK, leaderISR, CHANGE);
           state = LOOP;
+
         }
       }
-
-      
-      break;
+    break;
 
     case PAUSE:
       lastSampleCounterHaltPos = getSampleCount();
       pausePlaying(true);
-      pidTimer.stop();
       PRINT("Pausing playback at sample ");
       PRINTLN(lastSampleCounterHaltPos);
       myPID.SetMode(myPID.Control::manual);
+      pidTimer.stop();
       state = PAUSED;
       break;
 
@@ -368,10 +443,12 @@ break;
       break;
 
     case RESUME:
-      myPID.SetMode(myPID.Control::timer);
+
       pidTimer.start();
       restoreSampleCounter(lastSampleCounterHaltPos);
       pausePlaying(false);
+      myPID.SetMode(myPID.Control::timer);
+      PRINTLN(myPID.GetMode());
       PRINTLN("Resuming playback.");
       state = PLAYING;
       break;
@@ -385,12 +462,11 @@ break;
       state = QUIT;
       break;
 
-   case LOOP:
+    case LOOP:
 
       noInterrupts();
       stopPlaying();
       currentlyLooping = true;      
-
       detachInterrupt(IMPULSE);
       drawWaitForPlayingMenu();
       pidTimer.end(); 
@@ -431,18 +507,35 @@ break;
       //Kill PID timer
       // 7. Prepare PID
       
-      
-      _frameOffset             = 0;
-      sampleCountBaseLine      = 0;
-      lastSampleCounterHaltPos = 0;
-      //syncOffsetImps           = 0;
-      //syncOffsetImps           = SYNC_OFFSET_EIKI * _fsPhysical;
-      Setpoint                 = 0;
-      Input                    = 0;
-      Output                   = 0;
+      PRINTLN("LOOPING");
 
-      totalImpCounter          = 0;
+       _frameOffset             = 0;
+        sampleCountBaseLine      = 0;
+        lastSampleCounterHaltPos = 0;
+        syncOffsetImps           = 0;
       
+        firstSyncOffsetImps      = pConf.lastUsedOffsetFrames * pConf.shutterBladeCount;
+        
+        Setpoint                 = 0;
+        Input                    = 0;
+        Output                   = 0;
+        totalOffsetImps = oldSyncOffsetImps + (pConf.startmarkOffsetFrames * pConf.shutterBladeCount);
+      
+        PRINTLN("\n");
+        PRINT("firstSyncOffsetImps = ");
+        PRINT(firstSyncOffsetImps);
+        PRINTLN("\n");
+        PRINT("oldSyncOffsetImps = ");
+        PRINT(oldSyncOffsetImps);
+        PRINTLN("\n");
+        
+        PRINT(syncOffsetImps);
+        PRINTLN("\n");
+        PRINT("totalOffsetImps = ");
+        PRINT(totalOffsetImps);
+        PRINTLN("\n");
+
+
       while (average(0) != 0) {}
 
       myPID.SetMode(myPID.Control::timer);
@@ -454,6 +547,8 @@ break;
              case 22050: myPID.SetOutputLimits(-400000, 600000); break;  // 17% - 227%
              case 32000: myPID.SetOutputLimits(-400000, 285000); break;  // 17% - 159%
              case 44100: myPID.SetOutputLimits(-400000,  77000); break;  // 17% - 116%
+    //         case 48000: myPID.SetOutputLimits(-400000,  29000); break;  // 17% - 107%
+
              case 48000: myPID.SetOutputLimits(-400000,  29000); break;  // 17% - 107%
              default:    myPID.SetOutputLimits(-400000,  77000);         // lets assume 44.2 kHz here
            }
@@ -465,12 +560,10 @@ break;
       delay(500);                         // wait for pause
       setVolume(4,4);                     // raise volume back up for playback
 
-      //clearSampleCounter();      
       interrupts();
-      PRINTLN("Offset =");
-      PRINTLN(_frameOffset); 
+      //PRINTLN("Offset =");
+      //PRINTLN(_frameOffset); 
     break;
-        
 
    }
   }
@@ -478,16 +571,10 @@ break;
   return true;
 }
 
-bool Audio::loadTrack(uint16_t trackNum) {
-  _trackNum = trackNum;
-  return loadTrack();
-}
 
 uint8_t Audio::handlePause() {
 
-  if(!currentlyLooping){
-
-static uint16_t pauseDetectedPeriod = (1000 / _fps * 3);
+  static uint16_t pauseDetectedPeriod = (1000 / _fps * 3);
   static uint32_t prevTotalImpCounter = 0;
   static uint32_t lastImpMillis;
 
@@ -495,57 +582,36 @@ static uint16_t pauseDetectedPeriod = (1000 / _fps * 3);
 
   if (paused()) {
     if (impsChanged)
-      state =  RESUME;
+      return RESUME;
     else
-      state = PAUSED;
-  } 
-  else {  //if !paused()
-    if (impsChanged) {
-      prevTotalImpCounter = totalImpCounter + syncOffsetImps;
-      lastImpMillis = millis();
-      state = PLAYING;
-    }
-    else if ((millis() - lastImpMillis) >= pauseDetectedPeriod) {
-      state = PAUSE;
-    }
+      return PAUSED;
+  } else {
+      if (impsChanged && !paused()) {
+        prevTotalImpCounter = totalImpCounter + syncOffsetImps;
+        lastImpMillis = millis();
+      } else if ((millis() - lastImpMillis) >= pauseDetectedPeriod) {
+      return PAUSE;
+      }
+    return PLAYING;
   }
-  }
-  return state;
-
 }
 
 void Audio::speedControlPID() {
-  if (totalImpCounter < 100){
-    prevImpCounter = totalImpCounter;
-    currentlyLooping = false;
-  } 
-  else {
-    actualSampleCount = getSampleCount() - sampleCountBaseLine + _fsPhysical;
-    desiredSampleCount = (totalImpCounter + syncOffsetImps) * impToSamplerateFactor - _fsPhysical;
- // uint32_t actualSampleCount = getSampleCount() - sampleCountBaseLine;
-//  int32_t desiredSampleCount = totalImpCounter * impToSamplerateFactor;
-    long delta = (actualSampleCount - desiredSampleCount);
-   //PRINT("getSampleCount ");
-   //PRINTLN(getSampleCount());
-    PRINT("actualSampleCount ");
-    PRINTLN(actualSampleCount);
-    PRINT("desiredSampleCount ");
-    PRINTLN(desiredSampleCount);
-    PRINT("totalImpCounter ");
-    PRINTLN(totalImpCounter);
-    PRINT("delta ");
-    PRINTLN(delta);
-    Input = average(delta);
-    myPID.Compute();
-    adjustSamplerate(Output);
-  
-    _frameOffset = Input / deltaToFramesDivider;
-  
-    //This puts nifty CSV to the Console, to graph PID results.
-    //PRINTF("Delta:%d,Average:%f,FrameOffset: %d\n", delta, Input, _frameOffset);
-    //PRINTF("Input:%0.3f,Output:%0.3f\n", Input, Output);
-    //PRINTF("P:%0.5f,I:%0.5f,D:%0.5f\n", myPID.GetPterm(), myPID.GetIterm(), myPID.GetDterm());
-  }
+
+ desiredSampleCount = (totalImpCounter + syncOffsetImps) * impToSamplerateFactor;
+ actualSampleCount = getSampleCount() - sampleCountBaseLine;
+ long delta = actualSampleCount - desiredSampleCount;
+
+ Input = average(delta);
+ myPID.Compute();
+ adjustSamplerate(Output);
+
+ _frameOffset = Input / deltaToFramesDivider;
+
+       //This puts nifty CSV to the Console, to graph PID results. *Doesn't work on TeensyLC
+       //PRINTF("Delta:%d,Average:%f,FrameOffset: %d\n", delta, Input, _frameOffset);
+       //PRINTF("Input:%0.3f,Output:%0.3f\n", Input, Output);
+       //PRINTF("P:%0.5f,I:%0.5f,D:%0.5f\n", myPID.GetPterm(), myPID.GetIterm(), myPID.GetDterm());
 }
 
 void Audio::drawPlayingMenuConstants() {
@@ -591,6 +657,9 @@ void Audio::drawPlayingMenu() {
 
   // draw time-code
   uint32_t audioSecs = (totalImpCounter + syncOffsetImps) / impToAudioSecondsDivider;
+  //if (audioSecs < 0){
+  //  audioSecs = 0;
+  //}
   uint8_t hh = numberOfHours(audioSecs);
   uint8_t mm = numberOfMinutes(audioSecs);
   uint8_t ss = numberOfSeconds(audioSecs);
@@ -644,8 +713,8 @@ void Audio::handleFrameCorrectionOffsetInput() {
 
   EEPROMstruct pConf = projector.config();
   int32_t newSyncOffset = enc.getValue();
-  syncOffsetImps = newSyncOffset * pConf.shutterBladeCount;
-
+  oldSyncOffsetImps = (newSyncOffset * pConf.shutterBladeCount);
+  //syncOffsetImps = newSyncOffset;
   // clear screen buffer
   u8g2->clearBuffer();
 
@@ -653,9 +722,9 @@ void Audio::handleFrameCorrectionOffsetInput() {
   u8g2->setFont(FONT10);
   if (newSyncOffset == 0) {
     u8g2->drawStr(6,12,"Adjust Sync Offset");
-  } else if (newSyncOffset < 0) {
-    u8g2->drawStr(11,12,"Delay Sound by");
   } else if (newSyncOffset > 0) {
+    u8g2->drawStr(11,12,"Delay Sound by");
+  } else if (newSyncOffset < 0) {
     u8g2->drawStr(6,12,"Advance Sound by");
   }
   u8g2->drawStr(40,64,"Frames");
@@ -698,21 +767,6 @@ uint16_t Audio::getSamplingRate() {
   return sciRead(SCI_AUDATA) & 0xfffe;    // Mask the Mono/Stereo Bit
 }
 
-bool Audio::loadTrack() {
-  for (bool isLoop : { false, true })  {
-    looping = isLoop;
-    strcpy(_filename, (isLoop) ? "000-00-L.ogg" : "000-00.ogg");
-    ui.insertPaddedInt(&_filename[0], _trackNum, 10, 3);
-    for (_fps=12; _fps<=25; _fps++) {                             // guess fps
-      ui.insertPaddedInt(&_filename[4], _fps, 10, 2);
-      if (SD.exists(_filename)) {                                 // file found!
-        _isLoop = isLoop;
-        return true;
-      }
-    }
-  }
-  return false;                                         // file not found
-}
 
 bool Audio::isAuto() {
 

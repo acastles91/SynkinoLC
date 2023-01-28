@@ -41,7 +41,7 @@ bool Projector::load(uint8_t idx) {
   PRINT("  Shutter Blades:    ");
   PRINTLN(config_.shutterBladeCount);
   PRINT("  Start Mark Offset: ");
-  PRINT(config_.startmarkOffset);
+  PRINT(config_.startmarkOffsetFrames);
   PRINTLN(" frames");
   PRINT("  Proportional:      ");
   PRINTLN(config_.p);
@@ -49,6 +49,10 @@ bool Projector::load(uint8_t idx) {
   PRINTLN(config_.i);
   PRINT("  Derivative:        ");
   PRINTLN(config_.d);
+  PRINT("  Last Used Offset:        ");
+  PRINT(config_.lastUsedOffsetFrames);
+  PRINTLN(" frames");
+
   PRINTLN("");
 
   return true;
@@ -118,7 +122,7 @@ bool Projector::edit(uint8_t idx) {
   ui.editCharArray(aProjector.name, MAX_PROJECTOR_NAME_LENGTH, "Set Projector Name");
   ui.reverseEncoder(true);
   u8g2->userInterfaceInputValue("# Shutter Blades:", "", &aProjector.shutterBladeCount, 1, 4, 1, "");
-  u8g2->userInterfaceInputValue("Start Mark Offset:", "", &aProjector.startmarkOffset, 1, 255, 3, " Frames");
+  u8g2->userInterfaceInputValue("Start Mark Offset:", "", &aProjector.startmarkOffsetFrames, 1, 255, 3, " Frames");
   u8g2->userInterfaceInputValue("Proportional:", "", &aProjector.p, 0, 99, 2, "");
   u8g2->userInterfaceInputValue("Integral:", "", &aProjector.i, 0, 99, 2, "");
   u8g2->userInterfaceInputValue("Derivative:", "", &aProjector.d, 0, 99, 2, "");
@@ -181,4 +185,18 @@ void Projector::e2delete(void) {
     EEPROM.update(i, 0);
   e2dump();
   create();
+}
+
+int32_t Projector::getLastUsedOffset(){
+  return config_.lastUsedOffsetFrames;
+}
+
+void Projector::setLastUsedOffset(int32_t arg){
+uint8_t idx = EEPROM.read(EEPROM_IDX_LAST);
+  EEPROMstruct aProjector = e2load(idx);
+//
+  aProjector.lastUsedOffsetFrames = arg;
+  e2save(idx, aProjector);
+  config_.lastUsedOffsetFrames = arg;
+
 }
